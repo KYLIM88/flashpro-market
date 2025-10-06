@@ -1,55 +1,64 @@
 // pages/api/checkout/create.js
 import Stripe from "stripe";
 
-const stripe = new Stripe(process.env.STRIPE_SECRET_KEY, {
-  apiVersion: "2024-06-20",
-});
-
 export default async function handler(req, res) {
   if (req.method !== "POST") {
     return res.status(405).json({ error: "Method not allowed" });
   }
 
+  const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
+  const { deckId, deckName, amount, currency, sellerAccountId } = req.body || {};
+
+  // 🧮 Default values if missing
+  const priceAmount = Number(amount) || 500; // 500 = S$5.00
+  const deckTitle = deckName || `Deck: ${deckId || "Untitled"}`;
+  const currencyUsed = currency || "sgd";
+
+  // 🧾 Platform fee (12%)
+  const platformFeeAmount = Math.round(priceAmount * 0.12); // 12% of sale price
+
   try {
-    const {
-      amount,            // in cents, e.g. 500 = S$5.00
-      currency = "sgd",
-      deckId = "demo",
-      deckName = "Deck",
-      // sellerAccountId, // ignored in platform-only test
-    } = req.body || {};
-
-    // Basic validation
-    const amt = Number(amount);
-    if (!amt || Number.isNaN(amt) || amt <= 0) {
-      return res.status(400).json({ error: "Invalid or missing amount (in cents)" });
-    }
-
-    const site = process.env.NEXT_PUBLIC_SITE_URL || "http://localhost:3000";
-
-    // ✅ PLATFORM-ONLY TEST:
-    // No transfer_data and NO application_fee_amount — charge goes to your platform account.
+    // ✅ Create a checkout session
     const session = await stripe.checkout.sessions.create({
       mode: "payment",
       payment_method_types: ["card"],
       line_items: [
         {
-          price_data: {
-            currency,
-            product_data: { name: deckName || `Deck ${deckId}` },
-            unit_amount: amt,
-          },
           quantity: 1,
+          price_data: {
+            currency: currencyUsed,
+            unit_amount: priceAmount,
+            product_data: {
+              name: deckTitle,
+            },
+          },
         },
       ],
-      success_url: `${site}/checkout/success?deckId=${encodeURIComponent(deckId)}`,
-      cancel_url: `${site}/checkout/cancel?deckId=${encodeURIComponent(deckId)}`,
-      // payment_intent_data: {} ← intentionally omitted
+      success_url: `${process.env.NEXT_PUBLIC_SITE_URL}/checkout/success?deckId=${encodeURIComponent(
+        deckId || ""
+      )}`,
+      cancel_url: `${process.env.NEXT_PUBLIC_SITE_URL}/checkout/cancel`,
+
+      // 💸 Route money to seller and keep 12% platform fee
+      payment_intent_data: sellerAccountId
+        ? {
+            application_fee_amount: platformFeeAmount, // your 12% cut
+            transfer_data: { destination: sellerAccountId }, // seller’s Stripe account
+          }
+        : undefined,
+
+      // 🏷️ Metadata (useful for webhooks or records)
+      metadata: {
+        deckId: deckId || "",
+        deckName: deckTitle,
+        sellerAccountId: sellerAccountId || "",
+      },
     });
 
+    // 🔗 Return the Checkout URL to client
     return res.status(200).json({ url: session.url });
   } catch (err) {
-    console.error("Checkout create error:", err);
-    return res.status(400).json({ error: err.message || "Unable to create checkout" });
+    console.error("❌ Stripe checkout error:", err.message);
+    return res.status(500).json({ error: err.message });
   }
 }
