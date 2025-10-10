@@ -1,72 +1,89 @@
-// flashpro-market/app/api/stripe/webhook/route.js
+// app/api/stripe/webhook/route.js
 import Stripe from "stripe";
-import { db } from "@/lib/firebaseAdmin";
+import { adminDb } from "@/lib/firebaseAdmin"; // ✅ correct import
+import { FieldValue } from "firebase-admin/firestore";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
+
+// Allow multiple signing secrets, comma-separated (platform,connected)
+function getSecrets() {
+  const raw = process.env.STRIPE_WEBHOOK_SECRET || "";
+  return raw.split(",").map(s => s.trim()).filter(Boolean);
+}
 
 export async function GET() {
   return new Response("✅ Webhook endpoint is alive", { status: 200 });
 }
 
 export async function POST(req) {
-  const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
-  const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET;
-
-  // 1️⃣ Get raw body + signature for verification
-  const rawBody = await req.text();
-  const sig = req.headers.get("stripe-signature");
-
-  if (!sig || !webhookSecret) {
-    console.error("❌ Missing Stripe signature or webhook secret");
-    return new Response("Missing signature or secret", { status: 400 });
-  }
-
-  // 2️⃣ Verify event
-  let event;
   try {
-    event = stripe.webhooks.constructEvent(rawBody, sig, webhookSecret);
+    const rawBody = await req.text();
+    const sig = req.headers.get("stripe-signature");
+    const secrets = getSecrets();
+
+    if (!sig || secrets.length === 0) {
+      console.error("❌ Missing Stripe signature or webhook secret(s)");
+      return new Response("Missing signature or secret", { status: 400 });
+    }
+
+    // Try each secret until one verifies
+    let event = null;
+    let lastErr = null;
+    for (const secret of secrets) {
+      try {
+        event = stripe.webhooks.constructEvent(rawBody, sig, secret);
+        break;
+      } catch (e) {
+        lastErr = e;
+      }
+    }
+    if (!event) {
+      console.error("❌ Signature verification failed for all secrets:", lastErr?.message);
+      return new Response(`Webhook Error: ${lastErr?.message || "bad signature"}`, { status: 400 });
+    }
+
+    console.log("✅ Stripe event verified:", event.type);
+
+    if (event.type === "checkout.session.completed") {
+      const s = event.data.object;
+
+      const buyerEmail = s?.customer_details?.email || s?.metadata?.buyerEmail || null;
+      const deckId = s?.metadata?.deckId || null; // Firestore deck doc ID
+      const buyerUid = s?.metadata?.uid || null;
+      const sellerAccountId = s?.metadata?.sellerAccountId || "";
+
+      console.log("🧾 checkout.session.completed payload:", {
+        sessionId: s.id, buyerEmail, deckId, buyerUid, sellerAccountId
+      });
+
+      if (!buyerEmail || !deckId) {
+        console.warn("⚠️ Missing buyerEmail or deckId — skipping save");
+        return new Response("ok", { status: 200 });
+      }
+
+      await adminDb.collection("purchases").add({
+        buyerEmail,
+        buyerUid,
+        deckId,
+        sellerAccountId,
+        stripeSessionId: s.id,
+        amount_total: s.amount_total ?? null,
+        currency: s.currency ?? "sgd",
+        createdAt: FieldValue.serverTimestamp(),
+        source: "stripe",
+      });
+
+      console.log(`📝 Saved purchase → ${buyerEmail} owns deck ${deckId}`);
+    } else {
+      console.log("ℹ️ Unhandled event type:", event.type);
+    }
+
+    return new Response("ok", { status: 200 });
   } catch (err) {
-    console.error("❌ Webhook signature verification failed:", err.message);
-    return new Response(`Webhook Error: ${err.message}`, { status: 400 });
+    console.error("❌ Webhook handler failed:", err);
+    return new Response("Webhook handler failed", { status: 500 });
   }
-
-  // 3️⃣ Handle successful checkout
-  if (event.type === "checkout.session.completed") {
-    const s = event.data.object;
-    const uid = s.metadata?.uid;
-    const deckId = s.metadata?.deckId;
-
-    console.log("✅ checkout.session.completed:", s.id, uid, deckId);
-
-    if (!uid || !deckId) {
-      console.error("❌ Missing uid or deckId in session metadata");
-      return new Response("Missing uid or deckId", { status: 400 });
-    }
-
-    try {
-      await db.doc(`users/${uid}/purchases/${deckId}`).set(
-        {
-          deckId,
-          sessionId: s.id,
-          amountTotal: s.amount_total,
-          currency: s.currency,
-          purchasedAt: new Date(),
-          paymentStatus: s.payment_status,
-          source: "stripe",
-        },
-        { merge: true }
-      );
-
-      console.log("✅ Purchase saved to Firestore for:", uid, deckId);
-    } catch (error) {
-      console.error("❌ Firestore write error:", error.message);
-      return new Response("Database error", { status: 500 });
-    }
-  } else {
-    console.log("ℹ️ Unhandled event type:", event.type);
-  }
-
-  // 4️⃣ Always respond 200 to Stripe
-  return new Response("ok", { status: 200 });
 }
