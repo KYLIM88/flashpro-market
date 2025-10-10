@@ -1,9 +1,11 @@
 export default function CancelPage() {
   return (
-    <main style={{ maxWidth: 680, margin: "40px auto", padding: "0 16px" }}>
-      <h1>Payment cancelled</h1>
-      <p>No charge was made.</p>
-      <a href="/">← Back home</a>
+    <main className="min-h-screen grid place-items-center p-8">
+      <div style={{maxWidth:560}}>
+        <h1>❌ Payment Cancelled</h1>
+        <p>No charge was made.</p>
+        <a href="/">Try again</a>
+      </div>
     </main>
   );
 }
