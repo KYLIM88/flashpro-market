@@ -1,6 +1,6 @@
 // app/api/stripe/webhook/route.js
 import Stripe from "stripe";
-import { adminDb } from "@/lib/firebaseAdmin"; // ✅ correct import
+import { adminDb } from "@/lib/firebaseAdmin"; // ✅ uses Admin SDK (bypasses rules)
 import { FieldValue } from "firebase-admin/firestore";
 
 export const runtime = "nodejs";
@@ -11,7 +11,7 @@ const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 // Allow multiple signing secrets, comma-separated (platform,connected)
 function getSecrets() {
   const raw = process.env.STRIPE_WEBHOOK_SECRET || "";
-  return raw.split(",").map(s => s.trim()).filter(Boolean);
+  return raw.split(",").map((s) => s.trim()).filter(Boolean);
 }
 
 export async function GET() {
@@ -29,7 +29,7 @@ export async function POST(req) {
       return new Response("Missing signature or secret", { status: 400 });
     }
 
-    // Try each secret until one verifies
+    // Try each secret until one verifies (supports “Your account” + “Connected/v2 accounts”)
     let event = null;
     let lastErr = null;
     for (const secret of secrets) {
@@ -49,25 +49,31 @@ export async function POST(req) {
 
     if (event.type === "checkout.session.completed") {
       const s = event.data.object;
+      const md = s?.metadata || {};
 
-      const buyerEmail = s?.customer_details?.email || s?.metadata?.buyerEmail || null;
-      const deckId = s?.metadata?.deckId || null; // Firestore deck doc ID
-      const buyerUid = s?.metadata?.uid || null;
-      const sellerAccountId = s?.metadata?.sellerAccountId || "";
+      // ✅ NEW canonical fields with backward-compat fallbacks
+      const deckDocId   = md.deckDocId || md.deckId || null;           // Firestore deck document ID
+      const deckName    = md.deckName  || null;
+      const buyerUid    = md.buyerUid  || md.uid || null;
+      const buyerEmail  = md.buyerEmail || s?.customer_details?.email || null;
+      const sellerAccountId = md.sellerAccountId || "";
 
       console.log("🧾 checkout.session.completed payload:", {
-        sessionId: s.id, buyerEmail, deckId, buyerUid, sellerAccountId
+        sessionId: s.id, buyerEmail, deckDocId, buyerUid, sellerAccountId
       });
 
-      if (!buyerEmail || !deckId) {
-        console.warn("⚠️ Missing buyerEmail or deckId — skipping save");
+      if (!buyerEmail || !deckDocId) {
+        console.warn("⚠️ Missing buyerEmail or deckDocId — skipping save");
         return new Response("ok", { status: 200 });
+        // (Do not throw; we don't want Stripe to retry forever on metadata mistakes.)
       }
 
+      // Save canonical purchase row (what your client reads)
       await adminDb.collection("purchases").add({
         buyerEmail,
-        buyerUid,
-        deckId,
+        buyerUid: buyerUid || null,
+        deckId: deckDocId,                 // ✅ store the real Firestore deck ID
+        deckName: deckName || null,
         sellerAccountId,
         stripeSessionId: s.id,
         amount_total: s.amount_total ?? null,
@@ -76,7 +82,17 @@ export async function POST(req) {
         source: "stripe",
       });
 
-      console.log(`📝 Saved purchase → ${buyerEmail} owns deck ${deckId}`);
+      // Write an index doc for hardened rules later: purchasesIndex/{buyerUid__deckDocId}
+      if (buyerUid) {
+        const idxId = `${buyerUid}__${deckDocId}`;
+        await adminDb.doc(`purchasesIndex/${idxId}`).set({
+          buyerUid,
+          deckId: deckDocId,
+          createdAt: FieldValue.serverTimestamp(),
+        });
+      }
+
+      console.log(`📝 Saved purchase → ${buyerEmail} owns deck ${deckDocId}`);
     } else {
       console.log("ℹ️ Unhandled event type:", event.type);
     }

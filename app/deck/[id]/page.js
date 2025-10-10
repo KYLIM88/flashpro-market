@@ -1,19 +1,37 @@
 "use client";
 import { useEffect, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
-import { auth } from "@/lib/firebaseClient";
+import { auth, db } from "@/lib/firebaseClient";
 import { onAuthStateChanged } from "firebase/auth";
+import { doc, getDoc } from "firebase/firestore";
 
 export default function DeckPage() {
   const router = useRouter();
-  const { id: deckId } = useParams();
+  const { id: deckDocId } = useParams(); // Firestore deck document ID from URL
+
   const [user, setUser] = useState(null);
   const [busy, setBusy] = useState(false);
+  const [deckName, setDeckName] = useState("(loading...)");
 
+  // Auth listener
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, (u) => setUser(u));
     return () => unsub();
   }, []);
+
+  // Load the real deck name from Firestore
+  useEffect(() => {
+    async function loadDeck() {
+      try {
+        const snap = await getDoc(doc(db, "decks", String(deckDocId)));
+        const data = snap.exists() ? snap.data() : null;
+        setDeckName((data?.name || "Untitled deck").toString());
+      } catch {
+        setDeckName("Untitled deck");
+      }
+    }
+    if (deckDocId) loadDeck();
+  }, [deckDocId]);
 
   async function handleBuy() {
     if (!user) {
@@ -24,19 +42,20 @@ export default function DeckPage() {
     setBusy(true);
 
     try {
-      // 1) Ensure Stripe customer exists
+      // 1) Ensure Stripe Customer exists (your existing API)
       const customerRes = await fetch("/api/stripe/customer", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ uid: user.uid, email: user.email }),
       });
+
       if (!customerRes.ok) {
-        const t = await customerRes.text().catch(() => "");
-        console.error("customer error:", t);
+        console.error("customer error:", await customerRes.text().catch(() => ""));
         alert("Failed to create Stripe customer");
         setBusy(false);
         return;
       }
+
       const { customerId } = await customerRes.json();
       if (!customerId) {
         alert("No customerId returned");
@@ -44,19 +63,27 @@ export default function DeckPage() {
         return;
       }
 
-      // 2) Create checkout session
+      // 2) Create Checkout Session with proper metadata (no hardcoding)
       const checkoutRes = await fetch("/api/checkout", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ deckId, uid: user.uid, customerId }),
+        body: JSON.stringify({
+          deckDocId,                 // ✅ Firestore deck ID
+          deckName,                  // ✅ Human name (for Stripe UI)
+          buyerUid: user.uid,        // ✅ Who’s buying
+          buyerEmail: user.email,    // ✅ Their email
+          customerId,                // optional but you already have it
+          // sellerAccountId: "<optional_connect_acct_id>" // include if you have it handy
+        }),
       });
+
       if (!checkoutRes.ok) {
-        const t = await checkoutRes.text().catch(() => "");
-        console.error("checkout error:", t);
+        console.error("checkout error:", await checkoutRes.text().catch(() => ""));
         alert("Failed to start checkout");
         setBusy(false);
         return;
       }
+
       const { url } = await checkoutRes.json();
       if (!url) {
         alert("Checkout URL missing");
@@ -64,7 +91,7 @@ export default function DeckPage() {
         return;
       }
 
-      // 3) Redirect
+      // 3) Redirect to Stripe Checkout
       window.location.href = url;
     } catch (e) {
       console.error("buy error:", e);
@@ -74,9 +101,11 @@ export default function DeckPage() {
   }
 
   return (
-    <main style={{ padding: 24, maxWidth: 480, margin: "0 auto" }}>
-      <h1>Deck #{deckId}</h1>
+    <main style={{ padding: 24, maxWidth: 520, margin: "0 auto" }}>
+      <h1 style={{ marginBottom: 8 }}>Deck: {deckName}</h1>
+      <p style={{ marginTop: 0, color: "#555" }}>ID: {deckDocId}</p>
       <p>Price: S$5</p>
+
       <button
         onClick={handleBuy}
         disabled={busy}
