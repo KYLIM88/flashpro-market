@@ -1,8 +1,9 @@
 // app/checkout/success/page.js
 export const dynamic = "force-dynamic";
 
-export default function SuccessPage({ searchParams }) {
-  const sessionId = searchParams?.session_id ?? "unknown";
+export default async function SuccessPage({ searchParams }) {
+  const params = await searchParams; // 👈 Next 15: must await
+  const sessionId = params?.get?.("session_id") ?? "unknown";
 
   return (
     <main className="min-h-screen grid place-items-center p-8">
