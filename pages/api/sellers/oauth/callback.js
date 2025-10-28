@@ -2,23 +2,14 @@
 import Stripe from "stripe";
 
 // ---- Firebase Admin (server) ----
-import { getApps, initializeApp, applicationDefault, cert } from "firebase-admin/app";
-import { getFirestore, FieldValue } from "firebase-admin/firestore";
+// ✅ Use the shared Admin SDK initializer you already have
+import { db, initAdmin } from "@/lib/firebaseAdmin";
+import { FieldValue } from "firebase-admin/firestore";
 
-// Use whichever envs you already set for your webhook.
-// 1) If you have FIREBASE_SERVICE_ACCOUNT (JSON string) -> use that
-// 2) Else fall back to applicationDefault() (works if GOOGLE_APPLICATION_CREDENTIALS is set)
-function initAdmin() {
-  if (getApps().length) return;
-  if (process.env.FIREBASE_SERVICE_ACCOUNT) {
-    const svc = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
-    initializeApp({ credential: cert(svc) });
-  } else {
-    initializeApp({ credential: applicationDefault() });
-  }
-}
+// Keep your init semantics (no-op if already initialized)
 initAdmin();
-const adminDb = getFirestore();
+// Keep the same variable name used below
+const adminDb = db;
 
 // ---- Stripe ----
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY, { apiVersion: "2024-06-20" });
