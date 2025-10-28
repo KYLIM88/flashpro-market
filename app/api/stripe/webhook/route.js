@@ -1,6 +1,6 @@
 // app/api/stripe/webhook/route.js
 import Stripe from "stripe";
-import { adminDb } from "@/lib/firebaseAdmin"; // ✅ uses Admin SDK (bypasses rules)
+import { db } from "@/lib/firebaseAdmin";              // ✅ use db (not adminDb)
 import { FieldValue } from "firebase-admin/firestore";
 
 export const runtime = "nodejs";
@@ -51,7 +51,7 @@ export async function POST(req) {
       const s = event.data.object;
       const md = s?.metadata || {};
 
-      // ✅ NEW canonical fields with backward-compat fallbacks
+      // ✅ canonical fields with backward-compat fallbacks
       const deckDocId   = md.deckDocId || md.deckId || null;           // Firestore deck document ID
       const deckName    = md.deckName  || null;
       const buyerUid    = md.buyerUid  || md.uid || null;
@@ -65,11 +65,10 @@ export async function POST(req) {
       if (!buyerEmail || !deckDocId) {
         console.warn("⚠️ Missing buyerEmail or deckDocId — skipping save");
         return new Response("ok", { status: 200 });
-        // (Do not throw; we don't want Stripe to retry forever on metadata mistakes.)
       }
 
       // Save canonical purchase row (what your client reads)
-      await adminDb.collection("purchases").add({
+      await db.collection("purchases").add({
         buyerEmail,
         buyerUid: buyerUid || null,
         deckId: deckDocId,                 // ✅ store the real Firestore deck ID
@@ -85,7 +84,7 @@ export async function POST(req) {
       // Write an index doc for hardened rules later: purchasesIndex/{buyerUid__deckDocId}
       if (buyerUid) {
         const idxId = `${buyerUid}__${deckDocId}`;
-        await adminDb.doc(`purchasesIndex/${idxId}`).set({
+        await db.doc(`purchasesIndex/${idxId}`).set({
           buyerUid,
           deckId: deckDocId,
           createdAt: FieldValue.serverTimestamp(),
