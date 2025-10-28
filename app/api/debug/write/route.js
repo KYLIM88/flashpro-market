@@ -1,5 +1,5 @@
 // app/api/debug/write/route.js
-import { adminDb } from "@/lib/firebaseAdmin";
+import { db } from "@/lib/firebaseAdmin";           // ✅ use db (not adminDb)
 import { FieldValue } from "firebase-admin/firestore";
 
 export const runtime = "nodejs";
@@ -11,7 +11,7 @@ export async function GET(req) {
     const buyerEmail = searchParams.get("email") || "test@example.com";
     const deckId = searchParams.get("deckId") || "TEST_DECK_ID";
 
-    await adminDb.collection("purchases").add({
+    await db.collection("purchases").add({
       buyerEmail,
       deckId,
       createdAt: FieldValue.serverTimestamp(),
