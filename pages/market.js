@@ -11,6 +11,8 @@ import {
   query,
   where,
   onSnapshot,
+  doc,
+  getDoc,
 } from "firebase/firestore";
 
 // Firebase (env)
@@ -43,22 +45,34 @@ function maskEmail(email = "") {
   return `${head}${tail}@${domain}`;
 }
 
+// check purchasesIndex in both key orders
+async function hasPurchase(uid, deckId) {
+  if (!uid || !deckId) return false;
+  const A = await getDoc(doc(db, "purchasesIndex", `${uid}__${deckId}`));
+  if (A.exists()) return true;
+  const B = await getDoc(doc(db, "purchasesIndex", `${deckId}__${uid}`));
+  return B.exists();
+}
+
 export default function MarketPage() {
   const [user, setUser] = useState(null);
   const [rows, setRows] = useState([]);
   const [qText, setQText] = useState("");
-  const [buyingId, setBuyingId] = useState(null); // simple in-flight flag
+  const [buyingId, setBuyingId] = useState(null);
+
+  // which deckIds are already owned (via purchase)
+  const [ownedDeckIds, setOwnedDeckIds] = useState(new Set());
+  const [checkingOwned, setCheckingOwned] = useState(false);
 
   useEffect(() => onAuthStateChanged(auth, setUser), []);
 
-  // load active listings (any seller)
+  // load active listings
   useEffect(() => {
     const qRef = query(collection(db, "listings"), where("status", "==", "active"));
     const unsub = onSnapshot(
       qRef,
       (snap) => {
         const data = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
-        // client-side sort: newest first by updatedAt/createdAt
         data.sort((a, b) => {
           const ta = (a.updatedAt?.seconds || a.createdAt?.seconds || 0);
           const tb = (b.updatedAt?.seconds || b.createdAt?.seconds || 0);
@@ -73,6 +87,38 @@ export default function MarketPage() {
     );
     return () => unsub();
   }, []);
+
+  // check ownership for visible deckIds (purchases-based)
+  useEffect(() => {
+    let cancelled = false;
+
+    async function checkOwned() {
+      if (!user || rows.length === 0) {
+        setOwnedDeckIds(new Set());
+        return;
+      }
+      const deckIds = Array.from(new Set(rows.map((r) => r.deckId).filter(Boolean)));
+      if (deckIds.length === 0) {
+        setOwnedDeckIds(new Set());
+        return;
+      }
+
+      setCheckingOwned(true);
+      try {
+        const pairs = await Promise.all(
+          deckIds.map(async (deckId) => [deckId, await hasPurchase(user.uid, deckId)])
+        );
+        if (cancelled) return;
+        const owned = new Set(pairs.filter(([, ok]) => ok).map(([id]) => id));
+        setOwnedDeckIds(owned);
+      } finally {
+        if (!cancelled) setCheckingOwned(false);
+      }
+    }
+
+    checkOwned();
+    return () => { cancelled = true; };
+  }, [user, rows]);
 
   const headerRight = useMemo(() => {
     if (!user) return <Link href="/login" className="btn primary">Login</Link>;
@@ -96,18 +142,23 @@ export default function MarketPage() {
   async function handleBuy(listing) {
     try {
       if (!user) {
-        // not signed in → send to login
         Router.push("/login");
         return;
       }
+
+      // guard: already owned (purchase) or you are the seller
+      const isSeller = listing?.sellerUid && user?.uid && listing.sellerUid === user.uid;
+      if (listing.deckId && (ownedDeckIds.has(listing.deckId) || isSeller)) {
+        alert(isSeller ? "This is your deck." : "You already own this deck.");
+        return;
+      }
+
       setBuyingId(listing.id);
 
-      // Minimal payload your /api/checkout expects
       const payload = {
         listingId: listing.id,
         buyerUid: user.uid,
         buyerEmail: user.email,
-        // Optional sanity check: send deckId too if you store it on listing
         deckId: listing.deckId || undefined,
       };
 
@@ -117,12 +168,17 @@ export default function MarketPage() {
         body: JSON.stringify(payload),
       });
 
-      const data = await res.json();
-      if (!res.ok || !data?.url) {
-        throw new Error(data?.error || "Failed to start checkout");
+      let data;
+      try {
+        data = await res.clone().json();
+      } catch {
+        const text = await res.text();
+        throw new Error(text || `HTTP ${res.status}`);
       }
 
-      // Go to Stripe Checkout
+      if (!res.ok) throw new Error(data?.error || `HTTP ${res.status}`);
+      if (!data?.url) throw new Error("No checkout URL returned.");
+
       window.location.href = data.url;
     } catch (e) {
       console.error("Buy error:", e);
@@ -169,6 +225,11 @@ export default function MarketPage() {
             const count = item.preview?.cardCount;
             const priceCents = item.priceCents ?? item.price_cents ?? item.priceCentsSGD ?? 0;
 
+            // ✅ treat seller as owner too
+            const isSeller = !!(user && item.sellerUid && item.sellerUid === user.uid);
+            const isOwnedByPurchase = !!(user && item.deckId && ownedDeckIds.has(item.deckId));
+            const isOwned = isSeller || isOwnedByPurchase;
+
             return (
               <article key={item.id} className="card">
                 <div className="head">
@@ -186,14 +247,18 @@ export default function MarketPage() {
                 </div>
 
                 <div className="actions">
-                  <button
-                    className="btn primary"
-                    onClick={() => handleBuy(item)}
-                    disabled={buyingId === item.id}
-                    aria-busy={buyingId === item.id}
-                  >
-                    {buyingId === item.id ? "Redirecting…" : "Buy"}
-                  </button>
+                  {isOwned ? (
+                    <span className="owned">{isSeller ? "Your deck" : "Owned ✓"}</span>
+                  ) : (
+                    <button
+                      className="btn primary"
+                      onClick={() => handleBuy(item)}
+                      disabled={buyingId === item.id || checkingOwned}
+                      aria-busy={buyingId === item.id || checkingOwned}
+                    >
+                      {buyingId === item.id ? "Redirecting…" : (checkingOwned ? "Checking…" : "Buy")}
+                    </button>
+                  )}
                 </div>
               </article>
             );
@@ -249,6 +314,16 @@ export default function MarketPage() {
         .chip{font-size:12px;color:var(--muted);background:#f8fafc;border:1px solid var(--border);border-radius:999px;padding:6px 10px}
         .actions{display:flex;justify-content:flex-end}
         .empty{background:#fff;border:1px solid var(--border);border-radius:16px;box-shadow:var(--shadow);padding:16px;text-align:center;display:grid;gap:10px}
+
+        .owned{
+          display:inline-block;
+          padding:10px 14px;
+          border-radius:10px;
+          background:#f1f5f9;
+          border:1px solid var(--border);
+          color:#0f172a;
+          font-weight:700;
+        }
 
         .footer{text-align:center;margin:24px 0 12px}
       `}</style>

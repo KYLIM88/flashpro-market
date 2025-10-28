@@ -88,7 +88,8 @@ export default function Dashboard() {
             <p>Onboard for payouts.</p>
           </Link>
 
-          <Link href="/analytics" className="card">
+          {/* ✅ Fixed Analytics link to Seller Earnings */}
+          <Link href="/seller/earnings" className="card">
             <div className="card-emoji">📈</div>
             <h3>Analytics</h3>
             <p>Sales and trends.</p>
