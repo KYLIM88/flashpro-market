@@ -54,6 +54,19 @@ async function hasPurchase(uid, deckId) {
   return B.exists();
 }
 
+// render stars from average (0–5)
+function Stars({ value }) {
+  const n = Math.round(Number(value) || 0);
+  const full = "★★★★★".slice(0, n);
+  const empty = "☆☆☆☆☆".slice(0, 5 - n);
+  return (
+    <span className="stars" title={`${value || 0} out of 5`}>
+      {full}
+      {empty}
+    </span>
+  );
+}
+
 export default function MarketPage() {
   const [user, setUser] = useState(null);
   const [rows, setRows] = useState([]);
@@ -64,18 +77,24 @@ export default function MarketPage() {
   const [ownedDeckIds, setOwnedDeckIds] = useState(new Set());
   const [checkingOwned, setCheckingOwned] = useState(false);
 
+  // live average ratings: { [deckId]: { avg, count } }
+  const [ratings, setRatings] = useState({});
+
   useEffect(() => onAuthStateChanged(auth, setUser), []);
 
   // load active listings
   useEffect(() => {
-    const qRef = query(collection(db, "listings"), where("status", "==", "active"));
+    const qRef = query(
+      collection(db, "listings"),
+      where("status", "==", "active")
+    );
     const unsub = onSnapshot(
       qRef,
       (snap) => {
         const data = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
         data.sort((a, b) => {
-          const ta = (a.updatedAt?.seconds || a.createdAt?.seconds || 0);
-          const tb = (b.updatedAt?.seconds || b.createdAt?.seconds || 0);
+          const ta = a.updatedAt?.seconds || a.createdAt?.seconds || 0;
+          const tb = b.updatedAt?.seconds || b.createdAt?.seconds || 0;
           return tb - ta;
         });
         setRows(data);
@@ -97,7 +116,9 @@ export default function MarketPage() {
         setOwnedDeckIds(new Set());
         return;
       }
-      const deckIds = Array.from(new Set(rows.map((r) => r.deckId).filter(Boolean)));
+      const deckIds = Array.from(
+        new Set(rows.map((r) => r.deckId).filter(Boolean))
+      );
       if (deckIds.length === 0) {
         setOwnedDeckIds(new Set());
         return;
@@ -117,8 +138,39 @@ export default function MarketPage() {
     }
 
     checkOwned();
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+    };
   }, [user, rows]);
+
+  // 🔴 NEW: live review averages per deckId
+  useEffect(() => {
+    // set up one listener per unique deckId
+    const deckIds = Array.from(new Set(rows.map((r) => r.deckId).filter(Boolean)));
+    if (deckIds.length === 0) return;
+
+    const unsubs = deckIds.map((deckId) =>
+      onSnapshot(
+        collection(db, "decks", String(deckId), "reviews"),
+        (snap) => {
+          const vals = snap.docs.map((d) => d.data());
+          const count = vals.length;
+          const avg = count
+            ? Math.round(
+                (vals.reduce((a, r) => a + (Number(r.rating) || 0), 0) / count) * 10
+              ) / 10
+            : 0;
+          setRatings((prev) => ({ ...prev, [deckId]: { avg, count } }));
+        },
+        (err) => {
+          console.warn("reviews average load failed for deck", deckId, err);
+          setRatings((prev) => ({ ...prev, [deckId]: { avg: 0, count: 0 } }));
+        }
+      )
+    );
+
+    return () => unsubs.forEach((u) => u && u());
+  }, [rows]);
 
   const headerRight = useMemo(() => {
     if (!user) return <Link href="/login" className="btn primary">Login</Link>;
@@ -139,35 +191,31 @@ export default function MarketPage() {
     return !s || t.includes(s);
   });
 
+  // (kept for parity; no longer used for the button since it links to /deck/[id])
   async function handleBuy(listing) {
     try {
       if (!user) {
         Router.push("/login");
         return;
       }
-
-      // guard: already owned (purchase) or you are the seller
-      const isSeller = listing?.sellerUid && user?.uid && listing.sellerUid === user.uid;
+      const isSeller =
+        listing?.sellerUid && user?.uid && listing.sellerUid === user.uid;
       if (listing.deckId && (ownedDeckIds.has(listing.deckId) || isSeller)) {
         alert(isSeller ? "This is your deck." : "You already own this deck.");
         return;
       }
-
       setBuyingId(listing.id);
-
       const payload = {
         listingId: listing.id,
         buyerUid: user.uid,
         buyerEmail: user.email,
         deckId: listing.deckId || undefined,
       };
-
       const res = await fetch("/api/checkout", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
       });
-
       let data;
       try {
         data = await res.clone().json();
@@ -175,10 +223,8 @@ export default function MarketPage() {
         const text = await res.text();
         throw new Error(text || `HTTP ${res.status}`);
       }
-
       if (!res.ok) throw new Error(data?.error || `HTTP ${res.status}`);
       if (!data?.url) throw new Error("No checkout URL returned.");
-
       window.location.href = data.url;
     } catch (e) {
       console.error("Buy error:", e);
@@ -196,6 +242,9 @@ export default function MarketPage() {
 
       <main className="container">
         <header className="topbar">
+          <div className="left-side">
+            <Link href="/" className="btn back-btn">← Back to Dashboard</Link>
+          </div>
           <div className="brand">
             <span className="logo">🛒</span>
             <h1>Marketplace</h1>
@@ -215,7 +264,9 @@ export default function MarketPage() {
           {filtered.length === 0 && (
             <div className="empty">
               <p>No listings yet. Check back soon!</p>
-              <Link href="/seller/decks" className="btn">List your first deck →</Link>
+              <Link href="/seller/decks" className="btn">
+                List your first deck →
+              </Link>
             </div>
           )}
 
@@ -223,12 +274,18 @@ export default function MarketPage() {
             const emoji = item.preview?.coverEmoji || "📚";
             const title = item.title || "Untitled Deck";
             const count = item.preview?.cardCount;
-            const priceCents = item.priceCents ?? item.price_cents ?? item.priceCentsSGD ?? 0;
+            const priceCents =
+              item.priceCents ?? item.price_cents ?? item.priceCentsSGD ?? 0;
 
             // ✅ treat seller as owner too
             const isSeller = !!(user && item.sellerUid && item.sellerUid === user.uid);
             const isOwnedByPurchase = !!(user && item.deckId && ownedDeckIds.has(item.deckId));
             const isOwned = isSeller || isOwnedByPurchase;
+
+            // rating snapshot for this deck
+            const rr = item.deckId ? ratings[item.deckId] : null;
+            const avg = rr?.avg || 0;
+            const cnt = rr?.count || 0;
 
             return (
               <article key={item.id} className="card">
@@ -243,21 +300,48 @@ export default function MarketPage() {
                   <span className="chip">
                     {count ? `${count} cards` : "Card count —"}
                   </span>
-                  <span className="chip">Seller: {maskEmail(item.sellerEmail)}</span>
+
+                  {/* 🔗 Seller chip links to public profile */}
+                  <span className="chip">
+                    Seller:{" "}
+                    {item.sellerUid ? (
+                      <Link
+                        href={`/u/${item.sellerUid}`}
+                        className="sellerLink"
+                        title="View seller profile"
+                      >
+                        {item.sellerName ||
+                          maskEmail(item.sellerEmail) ||
+                          "View profile"}
+                      </Link>
+                    ) : (
+                      maskEmail(item.sellerEmail)
+                    )}
+                  </span>
+                </div>
+
+                {/* ⭐ Rating row at bottom */}
+                <div className="ratingRow">
+                  <Stars value={avg} />
+                  <span className="muted small">{cnt ? `${avg}/5 · ${cnt}` : "No reviews yet"}</span>
                 </div>
 
                 <div className="actions">
                   {isOwned ? (
-                    <span className="owned">{isSeller ? "Your deck" : "Owned ✓"}</span>
+                    <span className="owned">
+                      {isSeller ? "Your deck" : "Owned ✓"}
+                    </span>
                   ) : (
-                    <button
-                      className="btn primary"
-                      onClick={() => handleBuy(item)}
-                      disabled={buyingId === item.id || checkingOwned}
-                      aria-busy={buyingId === item.id || checkingOwned}
-                    >
-                      {buyingId === item.id ? "Redirecting…" : (checkingOwned ? "Checking…" : "Buy")}
-                    </button>
+                    item.deckId ? (
+                      <Link
+                        href={`/deck/${item.deckId}`}
+                        className="btn primary"
+                      >
+                        Buy
+                      </Link>
+                    ) : (
+                      <button className="btn" disabled title="Missing deck link">Buy</button>
+                    )
                   )}
                 </div>
               </article>
@@ -281,20 +365,30 @@ export default function MarketPage() {
         a{text-decoration:none;color:inherit}
 
         .container{max-width:1000px;margin:0 auto;padding:16px}
-        .topbar{position:sticky;top:0;z-index:20;display:flex;align-items:center;justify-content:space-between;gap:12px;background:var(--surface);border-bottom:1px solid var(--border);padding:12px 8px}
-        .brand{display:flex;align-items:center;gap:10px}
+
+        /* Topbar switched to 3-column grid to fit back button on the left, title center, profile on right */
+        .topbar{
+          position:sticky;top:0;z-index:20;
+          display:grid;grid-template-columns:1fr auto 1fr;
+          align-items:center;gap:12px;
+          background:var(--surface);border-bottom:1px solid var(--border);padding:12px 8px
+        }
+        .left-side{display:flex;align-items:center;gap:8px}
+        .brand{display:flex;align-items:center;gap:10px;justify-self:center}
         .brand h1{margin:0;font-size:18px;color:var(--primary);font-weight:800}
         .logo{display:grid;place-items:center;width:36px;height:36px;border-radius:12px;background:linear-gradient(135deg,var(--primary-weak),var(--primary));color:#fff;font-weight:900;box-shadow:var(--shadow)}
 
-        .right-side{display:flex;align-items:center;gap:12px}
+        .right-side{display:flex;align-items:center;gap:12px;justify-content:flex-end}
         .profile{display:flex;align-items:center;gap:10px}
         .avatar{width:36px;height:36px;border-radius:50%;display:grid;place-items:center;background:var(--primary);color:#fff;font-weight:800;box-shadow:var(--shadow)}
         .info{display:flex;flex-direction:column;align-items:flex-start;line-height:1.1}
         .email{font-size:13px;color:var(--muted)}
         .link{border:none;background:none;color:var(--primary);padding:0;font-size:12px;cursor:pointer}
+
         .btn{padding:10px 14px;border-radius:10px;border:1px solid var(--border);font-weight:600;background:#fff}
         .btn.primary{background:var(--primary);color:#fff;border-color:transparent;box-shadow:0 6px 18px rgba(37,99,235,.18)}
         .btn:disabled{opacity:.6}
+        .back-btn{min-width:unset;padding:8px 12px;border-radius:10px}
 
         .filters{margin:14px 0}
         .filters input{
@@ -312,6 +406,14 @@ export default function MarketPage() {
         .title{margin:0 0 2px;font-size:16px}
         .meta{display:flex;gap:6px;flex-wrap:wrap}
         .chip{font-size:12px;color:var(--muted);background:#f8fafc;border:1px solid var(--border);border-radius:999px;padding:6px 10px}
+        .sellerLink{text-decoration:underline;}
+        .ratingRow{
+          display:flex; align-items:center; gap:8px;
+          margin-top:2px;
+        }
+        .stars{color:#f59e0b; letter-spacing:1px;} /* amber */
+        .small{font-size:12px}
+
         .actions{display:flex;justify-content:flex-end}
         .empty{background:#fff;border:1px solid var(--border);border-radius:16px;box-shadow:var(--shadow);padding:16px;text-align:center;display:grid;gap:10px}
 

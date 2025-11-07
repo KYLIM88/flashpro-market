@@ -88,6 +88,18 @@ export default function Dashboard() {
             <p>Onboard for payouts.</p>
           </Link>
 
+          {/* 🔗 New: Public profile snapshot link (placed under Stripe Connect) */}
+          <Link
+            href={user ? `/u/${user.uid}` : "/login"}
+            className="card"
+          >
+            <div className="card-emoji">👤</div>
+            <h3>My Public Profile</h3>
+            <p>
+              View your seller page{user ? ` at /u/${user.uid}` : ""}.
+            </p>
+          </Link>
+
           {/* ✅ Fixed Analytics link to Seller Earnings */}
           <Link href="/seller/earnings" className="card">
             <div className="card-emoji">📈</div>

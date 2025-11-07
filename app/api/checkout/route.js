@@ -134,9 +134,8 @@ export async function POST(req) {
     // ======================================================
     // ✅ DIRECT CHARGES IMPLEMENTATION
     // ======================================================
-    // The checkout session is created *on the connected account*
-    // Stripe fees, disputes, and refunds belong to that account.
-    // The platform still collects 12% via application_fee_amount.
+    // Create Checkout Session on the connected account.
+    // Keep only application_fee_amount here. DO NOT set on_behalf_of.
     const session = await stripe.checkout.sessions.create(
       {
         mode: "payment",
@@ -163,11 +162,11 @@ export async function POST(req) {
         },
         payment_intent_data: {
           application_fee_amount: platformFee,
-          // NOTE: no transfer_data for direct charges
-          on_behalf_of: sellerAccountId,
+          // ❌ on_behalf_of removed for direct charges
+          // ❌ transfer_data not used for direct charges
         },
       },
-      { stripeAccount: sellerAccountId } // <- Direct charge: created on connected account
+      { stripeAccount: sellerAccountId } // direct charge on the seller's account
     );
 
     return NextResponse.json({ url: session.url }, { status: 200 });

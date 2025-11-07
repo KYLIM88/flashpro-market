@@ -243,6 +243,9 @@ export default function SellDecksPage() {
 
       <main className="container">
         <header className="topbar">
+          <div className="left-side">
+            <Link href="/" className="btn back-btn">← Back to Dashboard</Link>
+          </div>
           <div className="brand">
             <span className="logo">📚</span>
             <h1>Sell Decks</h1>
@@ -403,9 +406,7 @@ export default function SellDecksPage() {
                             disabled={busyId === deckId}
                             onClick={() => unpublish(deckId)}
                           >
-                            {busyId === deckId
-                              ? "Unpublishing…"
-                              : "Unpublish"}
+                            {busyId === deckId ? "Unpublishing…" : "Unpublish"}
                           </button>
                         ) : (
                           <button
@@ -413,9 +414,7 @@ export default function SellDecksPage() {
                             disabled={busyId === deckId}
                             onClick={() => publish(deck)}
                           >
-                            {busyId === deckId
-                              ? "Publishing…"
-                              : "Publish"}
+                            {busyId === deckId ? "Publishing…" : "Publish"}
                           </button>
                         )}
                       </div>
@@ -428,9 +427,7 @@ export default function SellDecksPage() {
         )}
 
         <footer className="footer">
-          <p className="muted">
-            © {new Date().getFullYear()} FlashPro
-          </p>
+          <p className="muted">© {new Date().getFullYear()} FlashPro</p>
         </footer>
       </main>
 
@@ -474,18 +471,24 @@ export default function SellDecksPage() {
           position: sticky;
           top: 0;
           z-index: 20;
-          display: flex;
+          display: grid;
+          grid-template-columns: 1fr auto 1fr;
           align-items: center;
-          justify-content: space-between;
           gap: 12px;
           background: var(--surface);
           border-bottom: 1px solid var(--border);
           padding: 12px 8px;
         }
+        .left-side {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+        }
         .brand {
           display: flex;
           align-items: center;
           gap: 10px;
+          justify-self: center;
         }
         .brand h1 {
           margin: 0;
@@ -513,6 +516,7 @@ export default function SellDecksPage() {
           display: flex;
           align-items: center;
           gap: 12px;
+          justify-content: flex-end;
         }
         .profile {
           display: flex;
@@ -728,6 +732,11 @@ export default function SellDecksPage() {
         }
         .btn:disabled {
           opacity: 0.6;
+        }
+        .back-btn {
+          min-width: unset;
+          padding: 8px 12px;
+          border-radius: 10px;
         }
         .empty {
           background: #fff;
