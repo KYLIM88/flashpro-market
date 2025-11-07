@@ -80,6 +80,9 @@ export default function MarketPage() {
   // live average ratings: { [deckId]: { avg, count } }
   const [ratings, setRatings] = useState({});
 
+  // ✅ cover cache: { [deckId]: coverUrl|null }
+  const [coversByDeck, setCoversByDeck] = useState({});
+
   useEffect(() => onAuthStateChanged(auth, setUser), []);
 
   // load active listings
@@ -143,9 +146,8 @@ export default function MarketPage() {
     };
   }, [user, rows]);
 
-  // 🔴 NEW: live review averages per deckId
+  // 🔴 live review averages per deckId
   useEffect(() => {
-    // set up one listener per unique deckId
     const deckIds = Array.from(new Set(rows.map((r) => r.deckId).filter(Boolean)));
     if (deckIds.length === 0) return;
 
@@ -171,6 +173,51 @@ export default function MarketPage() {
 
     return () => unsubs.forEach((u) => u && u());
   }, [rows]);
+
+  // ✅ fetch coverUrl for any deck we don't have yet
+  useEffect(() => {
+    if (!rows.length) return;
+    let cancelled = false;
+
+    (async () => {
+      const needed = Array.from(
+        new Set(
+          rows
+            .map((r) => String(r.deckId))
+            .filter((id) => id && !(id in coversByDeck))
+        )
+      );
+      if (!needed.length) return;
+
+      try {
+        const pairs = await Promise.all(
+          needed.map(async (deckId) => {
+            try {
+              const snap = await getDoc(doc(db, "decks", deckId));
+              const url = snap.exists() ? snap.data()?.coverUrl || null : null;
+              return [deckId, url];
+            } catch (e) {
+              console.warn("cover load failed for deck", deckId, e);
+              return [deckId, null];
+            }
+          })
+        );
+        if (!cancelled) {
+          setCoversByDeck((prev) => {
+            const next = { ...prev };
+            for (const [deckId, url] of pairs) next[deckId] = url;
+            return next;
+          });
+        }
+      } catch (e) {
+        console.error("batch cover load", e);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [rows, coversByDeck]);
 
   const headerRight = useMemo(() => {
     if (!user) return <Link href="/login" className="btn primary">Login</Link>;
@@ -287,8 +334,24 @@ export default function MarketPage() {
             const avg = rr?.avg || 0;
             const cnt = rr?.count || 0;
 
+            // ✅ cover (from listing or fetched cache)
+            const coverUrl =
+              item.coverUrl || (item.deckId ? coversByDeck[String(item.deckId)] : null);
+
             return (
               <article key={item.id} className="card">
+                {/* Cover or placeholder */}
+                {coverUrl ? (
+                  <img
+                    src={coverUrl}
+                    alt={`${title} cover`}
+                    className="coverImg"
+                    loading="lazy"
+                  />
+                ) : (
+                  <div className="cover">Deck cover</div>
+                )}
+
                 <div className="head">
                   <div className="emoji">{emoji}</div>
                   <div className="price">{money(priceCents)}</div>
@@ -400,6 +463,24 @@ export default function MarketPage() {
         @media(min-width:640px){.grid{grid-template-columns:repeat(3,1fr)}}
 
         .card{background:#fff;border:1px solid var(--border);border-radius:16px;box-shadow:var(--shadow);padding:14px;display:grid;gap:8px}
+        .coverImg{
+          width:100%;
+          aspect-ratio:16/9;
+          border-radius:12px;
+          border:1px solid var(--border);
+          object-fit:cover;
+          background:#f8fafc;
+        }
+        .cover{
+          width:100%;
+          aspect-ratio:16/9;
+          border-radius:12px;
+          border:1px solid var(--border);
+          background:#f8fafc;
+          color:#94a3b8; /* slate-400 */
+          display:flex;align-items:center;justify-content:center;
+          font-size:12px;
+        }
         .head{display:flex;justify-content:space-between;align-items:center}
         .emoji{font-size:22px}
         .price{font-weight:800}

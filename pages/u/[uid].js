@@ -32,6 +32,9 @@ export default function PublicProfilePage() {
   const [listings, setListings] = useState([]);
   const [loading, setLoading] = useState(true);
 
+  // cover cache: { [deckId]: coverUrl|null }
+  const [coversByDeck, setCoversByDeck] = useState({});
+
   // Load public profile
   useEffect(() => {
     if (!uid) return;
@@ -69,6 +72,49 @@ export default function PublicProfilePage() {
     );
     return () => unsub();
   }, [uid]);
+
+  // Fetch deck coverUrl for any listing we don't have yet
+  useEffect(() => {
+    if (!listings?.length) return;
+    let cancelled = false;
+
+    (async () => {
+      const needed = listings
+        .map((l) => String(l.deckId))
+        .filter((id) => !(id in coversByDeck));
+
+      if (!needed.length) return;
+
+      try {
+        const pairs = await Promise.all(
+          needed.map(async (deckId) => {
+            try {
+              const snap = await getDoc(doc(db, "decks", deckId));
+              const url = snap.exists() ? snap.data()?.coverUrl || null : null;
+              return [deckId, url];
+            } catch (e) {
+              console.warn("cover load failed for deck", deckId, e);
+              return [deckId, null];
+            }
+          })
+        );
+
+        if (!cancelled) {
+          setCoversByDeck((prev) => {
+            const next = { ...prev };
+            for (const [deckId, url] of pairs) next[deckId] = url;
+            return next;
+          });
+        }
+      } catch (e) {
+        console.error("batch cover load", e);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [listings, coversByDeck]);
 
   const displayName =
     profile?.displayName ||
@@ -139,13 +185,26 @@ export default function PublicProfilePage() {
             <div className="grid">
               {listings.map((row) => {
                 const price = priceFrom(row);
+                const coverUrl =
+                  row.coverUrl || coversByDeck[String(row.deckId)] || null;
+
                 return (
                   <Link
                     key={row.id}
                     href={`/deck/${row.deckId}`}
                     className="card"
                   >
-                    <div className="cover">Deck cover</div>
+                    {coverUrl ? (
+                      <img
+                        src={coverUrl}
+                        alt={`${row.title || "Deck"} cover`}
+                        className="coverImg"
+                        loading="lazy"
+                      />
+                    ) : (
+                      <div className="cover">Deck cover</div>
+                    )}
+
                     <div className="cardTitle" title={row.title || "Untitled"}>
                       {row.title || "Untitled deck"}
                     </div>
@@ -308,6 +367,7 @@ export default function PublicProfilePage() {
           border-color: #cbd5e1;
           box-shadow: 0 10px 26px rgba(2, 6, 23, 0.12);
         }
+
         .cover {
           aspect-ratio: 16/9;
           border-radius: 10px;
@@ -320,6 +380,17 @@ export default function PublicProfilePage() {
           background: #f8fafc;
           margin-bottom: 10px;
         }
+        .coverImg {
+          width: 100%;
+          aspect-ratio: 16 / 9;
+          border-radius: 10px;
+          border: 1px solid var(--border);
+          object-fit: cover;
+          background: #f8fafc;
+          display: block;
+          margin-bottom: 10px;
+        }
+
         .cardTitle {
           font-weight: 700;
           margin-bottom: 6px;
